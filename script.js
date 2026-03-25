@@ -4,8 +4,8 @@
    ======================================== */
 
 // ─── API Configuration ──────────────────────────────────────────
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const HF_IMAGE_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0";
+const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
+const HF_IMAGE_URL = "https://router.huggingface.co/nscale/v1/images/generations";
 
 // ─── DOM Elements ───────────────────────────────────────────────
 const chatMessages = document.getElementById("chatMessages");
@@ -19,7 +19,6 @@ const settingsBtn = document.getElementById("settingsBtn");
 
 // Modal elements
 const apiKeyModal = document.getElementById("apiKeyModal");
-const openRouterKeyInput = document.getElementById("openRouterKeyInput");
 const hfKeyInput = document.getElementById("hfKeyInput");
 const saveKeysBtn = document.getElementById("saveKeysBtn");
 const modalError = document.getElementById("modalError");
@@ -39,7 +38,7 @@ function getHuggingFaceKey() {
 }
 
 function hasValidKeys() {
-    return getOpenRouterKey().length > 0 && getHuggingFaceKey().length > 0;
+    return getHuggingFaceKey().length > 0;
 }
 
 // ─── Modal Logic ────────────────────────────────────────────────
@@ -47,10 +46,8 @@ function showModal() {
     apiKeyModal.classList.remove("hidden");
     appContainer.classList.add("locked");
     modalError.textContent = "";
-    // Pre-fill with stored keys if they exist
-    openRouterKeyInput.value = getOpenRouterKey();
     hfKeyInput.value = getHuggingFaceKey();
-    setTimeout(() => openRouterKeyInput.focus(), 100);
+    setTimeout(() => hfKeyInput.focus(), 100);
 }
 
 function hideModal() {
@@ -59,29 +56,15 @@ function hideModal() {
 }
 
 function handleSaveKeys() {
-    const orKey = openRouterKeyInput.value.trim();
     const hfKey = hfKeyInput.value.trim();
 
-    // Validation
-    if (!orKey && !hfKey) {
-        showModalError("Please enter both API keys to continue.");
-        return;
-    }
-    if (!orKey) {
-        showModalError("Please enter your OpenRouter API key.");
-        openRouterKeyInput.focus();
-        return;
-    }
     if (!hfKey) {
         showModalError("Please enter your Hugging Face API key.");
         hfKeyInput.focus();
         return;
     }
 
-    // Save to localStorage
-    localStorage.setItem("openrouter_api_key", orKey);
     localStorage.setItem("hf_api_key", hfKey);
-
     hideModal();
     updateUIState();
 }
@@ -144,9 +127,6 @@ function init() {
     // Allow Enter to submit modal
     hfKeyInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") handleSaveKeys();
-    });
-    openRouterKeyInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") hfKeyInput.focus();
     });
 
     // Auto-resize textarea
@@ -249,19 +229,17 @@ async function handleGenerateImage() {
     }
 }
 
-// ─── API: Chat Completion (OpenRouter) ──────────────────────────
+// ─── API: Chat Completion (HF Router) ───────────────────────────
 async function fetchChatResponse(messages) {
-    const apiKey = getOpenRouterKey();
-    const response = await fetch(OPENROUTER_URL, {
+    const apiKey = getHuggingFaceKey();
+    const response = await fetch(HF_CHAT_URL, {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": window.location.href,
-            "X-Title": "Your Bot",
         },
         body: JSON.stringify({
-            model: "openai/gpt-3.5-turbo",
+            model: "Qwen/Qwen2.5-1.5B-Instruct:featherless-ai",
             messages,
         }),
     });
@@ -271,28 +249,50 @@ async function fetchChatResponse(messages) {
     return data.choices?.[0]?.message?.content || "I didn't get a response. Try again.";
 }
 
-// ─── API: Image Generation (Hugging Face) ───────────────────────
+// ─── API: Image Generation (HF Router) ──────────────────────────
 async function fetchGeneratedImage(prompt) {
     const apiKey = getHuggingFaceKey();
-    const response = await fetch(HF_IMAGE_URL, {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            inputs: prompt,
-        }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000);
 
-    if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        throw new Error(errorData?.error || `Image API error (${response.status})`);
+    try {
+        const response = await fetch(HF_IMAGE_URL, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                model: "ByteDance/SDXL-Lightning-4step",
+                prompt,
+            }),
+            signal: controller.signal,
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            let errMsg = `Image API error (${response.status})`;
+            try { errMsg = JSON.parse(errText)?.error?.message || errMsg; } catch {}
+            throw new Error(errMsg);
+        }
+
+        const text = await response.text();
+        let data;
+        try { data = JSON.parse(text); } catch { throw new Error("Invalid response from image API."); }
+
+        const b64 = data?.data?.[0]?.b64_json;
+        if (!b64) throw new Error("No image returned. Please try again.");
+
+        const byteChars = atob(b64);
+        const byteArr = new Uint8Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+        return URL.createObjectURL(new Blob([byteArr], { type: "image/png" }));
+    } catch (err) {
+        if (err.name === "AbortError") throw new Error("Image generation timed out. Please try again.");
+        throw err;
+    } finally {
+        clearTimeout(timeout);
     }
-
-    // Hugging Face inference API returns raw bytes for image models
-    const blob = await response.blob();
-    return URL.createObjectURL(blob);
 }
 
 // ─── UI: Add Message ────────────────────────────────────────────
