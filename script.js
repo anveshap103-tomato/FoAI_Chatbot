@@ -4,7 +4,7 @@
    ======================================== */
 
 // ─── API Configuration ──────────────────────────────────────────
-const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
+const HF_CHAT_URL = "https://router.huggingface.co/featherless-ai/v1/chat/completions";
 const HF_IMAGE_URL = "https://router.huggingface.co/nscale/v1/images/generations";
 
 // ─── DOM Elements ───────────────────────────────────────────────
@@ -29,10 +29,6 @@ let conversationHistory = [];
 let isProcessing = false;
 
 // ─── Helpers: localStorage Keys ─────────────────────────────────
-function getOpenRouterKey() {
-    return localStorage.getItem("openrouter_api_key") || "";
-}
-
 function getHuggingFaceKey() {
     return localStorage.getItem("hf_api_key") || "";
 }
@@ -179,7 +175,7 @@ async function handleSendMessage() {
         hideTypingIndicator();
         const errMsg = err.message || "Something went wrong. Please try again.";
         if (errMsg.includes("401") || errMsg.toLowerCase().includes("unauthorized") || errMsg.toLowerCase().includes("invalid")) {
-            addMessage(`⚠️ Invalid OpenRouter API key. Please check your key in settings.`, "bot", false, true);
+            addMessage(`⚠️ Invalid Hugging Face API key. Please check your key in settings.`, "bot", false, true);
         } else {
             addMessage(`⚠️ ${errMsg}`, "bot", false, true);
         }
@@ -229,7 +225,7 @@ async function handleGenerateImage() {
     }
 }
 
-// ─── API: Chat Completion (HF Router) ───────────────────────────
+// ─── API: Chat Completion ────────────────────────────────────────
 async function fetchChatResponse(messages) {
     const apiKey = getHuggingFaceKey();
     const response = await fetch(HF_CHAT_URL, {
@@ -239,8 +235,9 @@ async function fetchChatResponse(messages) {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            model: "Qwen/Qwen2.5-1.5B-Instruct:featherless-ai",
+            model: "Qwen/Qwen2.5-1.5B-Instruct",
             messages,
+            max_tokens: 1024,
         }),
     });
 
@@ -249,11 +246,11 @@ async function fetchChatResponse(messages) {
     return data.choices?.[0]?.message?.content || "I didn't get a response. Try again.";
 }
 
-// ─── API: Image Generation (HF Router) ──────────────────────────
+// ─── API: Image Generation ───────────────────────────────────────
 async function fetchGeneratedImage(prompt) {
     const apiKey = getHuggingFaceKey();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
         const response = await fetch(HF_IMAGE_URL, {
@@ -263,8 +260,9 @@ async function fetchGeneratedImage(prompt) {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({
-                model: "ByteDance/SDXL-Lightning-4step",
+                model: "stabilityai/stable-diffusion-xl-base-1.0",
                 prompt,
+                response_format: "url",
             }),
             signal: controller.signal,
         });
@@ -276,13 +274,12 @@ async function fetchGeneratedImage(prompt) {
             throw new Error(errMsg);
         }
 
-        const text = await response.text();
-        let data;
-        try { data = JSON.parse(text); } catch { throw new Error("Invalid response from image API."); }
+        const data = await response.json();
+        const url = data?.data?.[0]?.url;
+        if (url) return url;
 
         const b64 = data?.data?.[0]?.b64_json;
         if (!b64) throw new Error("No image returned. Please try again.");
-
         const byteChars = atob(b64);
         const byteArr = new Uint8Array(byteChars.length);
         for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
